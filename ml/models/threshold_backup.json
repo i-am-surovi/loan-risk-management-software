@@ -1,0 +1,5 @@
+{
+    "threshold": 0.12,
+    "optimization_metric": "F2",
+    "validation_f2": 0.4807353044950956
+}

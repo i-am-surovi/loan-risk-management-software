@@ -1,11 +1,16 @@
 import { useEffect, useState } from "react";
 
-function LoanForm() {
+function LoanForm({ onPredictionSuccess }) {
   const [prediction, setPrediction] = useState(null);
   const [loading, setLoading] = useState(false);
+
   const [product, setProduct] = useState(null);
   const [productLoading, setProductLoading] = useState(true);
   const [productError, setProductError] = useState("");
+
+  const [calculation, setCalculation] = useState(null);
+  const [calculationLoading, setCalculationLoading] = useState(false);
+  const [calculationError, setCalculationError] = useState("");
 
   const [formData, setFormData] = useState({
     Age: "",
@@ -16,7 +21,7 @@ function LoanForm() {
     NumCreditLines: "",
     InterestRate: "",
     LoanTerm: "",
-    DTIRatio: "",
+    ExistingMonthlyDebt: "",
     HasCreditHistory: "Yes",
     Education: "Bachelor's",
     EmploymentType: "Full-time",
@@ -27,7 +32,7 @@ function LoanForm() {
     HasCoSigner: "No",
   });
 
-  // Load active Personal Loan product from the database
+  // Load active Personal Loan product
   useEffect(() => {
     const fetchProduct = async () => {
       try {
@@ -68,6 +73,7 @@ function LoanForm() {
     fetchProduct();
   }, []);
 
+  // Handle form changes
   const handleChange = (e) => {
     const { name, value } = e.target;
 
@@ -75,11 +81,72 @@ function LoanForm() {
       ...prev,
       [name]: value,
     }));
+
+    setCalculation(null);
+    setCalculationError("");
+    setPrediction(null);
   };
 
+  // Calculate actual EMI and DTI
+  const handleCalculate = async () => {
+    if (
+      !product ||
+      !formData.Income ||
+      !formData.LoanAmount ||
+      !formData.LoanTerm ||
+      formData.ExistingMonthlyDebt === ""
+    ) {
+      setCalculationError(
+        "Please enter Annual Income, Loan Amount, Loan Term and Existing Monthly Debt.",
+      );
+      return;
+    }
+
+    try {
+      setCalculationLoading(true);
+      setCalculationError("");
+      setCalculation(null);
+      setPrediction(null);
+
+      const response = await fetch(
+        "http://127.0.0.1:8000/api/v1/calculate-loan",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            product_id: product.id,
+            annual_income: Number(formData.Income),
+            loan_amount: Number(formData.LoanAmount),
+            loan_term_months: Number(formData.LoanTerm),
+            existing_monthly_debt: Number(formData.ExistingMonthlyDebt),
+          }),
+        },
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          typeof data.detail === "string"
+            ? data.detail
+            : JSON.stringify(data.detail || data),
+        );
+      }
+
+      setCalculation(data);
+    } catch (error) {
+      console.error("Calculation Error:", error);
+      setCalculationError(error.message);
+    } finally {
+      setCalculationLoading(false);
+    }
+  };
+
+  // Submit prediction
   const handleSubmit = async (e) => {
     e.preventDefault();
-
     setPrediction(null);
 
     if (productLoading) {
@@ -92,7 +159,12 @@ function LoanForm() {
       return;
     }
 
-    // No credit history: current model cannot reliably assess.
+    if (!calculation) {
+      alert("Please calculate EMI and DTI before prediction.");
+      return;
+    }
+
+    // Applicants without credit history require manual review
     if (formData.HasCreditHistory === "No") {
       setPrediction({
         manual_review: true,
@@ -103,43 +175,107 @@ function LoanForm() {
       return;
     }
 
+    // Validate required prediction fields
+    if (
+      !formData.Age ||
+      !formData.CreditScore ||
+      !formData.NumCreditLines ||
+      !formData.MonthsEmployed
+    ) {
+      alert("Please complete all applicant information.");
+      return;
+    }
+
     try {
       setLoading(true);
+
+      // Send only the 15 features used by the trained model
+      const predictionPayload = {
+        Age: Number(formData.Age),
+        Income: Number(formData.Income),
+        LoanAmount: Number(formData.LoanAmount),
+        CreditScore: Number(formData.CreditScore),
+        MonthsEmployed: Number(formData.MonthsEmployed),
+        NumCreditLines: Number(formData.NumCreditLines),
+        InterestRate: Number(product.annual_interest_rate),
+        LoanTerm: Number(formData.LoanTerm),
+
+        Education: formData.Education,
+        EmploymentType: formData.EmploymentType,
+        MaritalStatus: formData.MaritalStatus,
+        HasMortgage: formData.HasMortgage,
+        HasDependents: formData.HasDependents,
+        LoanPurpose: formData.LoanPurpose,
+        HasCoSigner: formData.HasCoSigner,
+      };
 
       const response = await fetch("http://127.0.0.1:8000/api/v1/predict", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          ...formData,
-          Age: Number(formData.Age),
-          Income: Number(formData.Income),
-          LoanAmount: Number(formData.LoanAmount),
-          CreditScore: Number(formData.CreditScore),
-          MonthsEmployed: Number(formData.MonthsEmployed),
-          NumCreditLines: Number(formData.NumCreditLines),
-          InterestRate: Number(product.annual_interest_rate),
-          LoanTerm: Number(formData.LoanTerm),
-          DTIRatio: Number(formData.DTIRatio),
-        }),
+        body: JSON.stringify(predictionPayload),
       });
 
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(JSON.stringify(data));
+        throw new Error(
+          typeof data.detail === "string"
+            ? data.detail
+            : JSON.stringify(data.detail || data),
+        );
       }
 
       setPrediction(data);
+
+      if (onPredictionSuccess) {
+        await onPredictionSuccess();
+      }
     } catch (error) {
       console.error("Prediction Error:", error);
-      alert("Prediction failed. Please check the backend.");
+      alert(error.message || "Prediction failed. Please check the backend.");
     } finally {
       setLoading(false);
     }
   };
 
+  // DTI Financial Warning System
+  const getDTIWarning = (dti) => {
+    if (dti <= 30) {
+      return {
+        level: "Low Debt Burden",
+        message: "The applicant has a relatively low debt burden.",
+        color: "green",
+      };
+    }
+
+    if (dti <= 40) {
+      return {
+        level: "Moderate Debt Burden",
+        message: "The applicant has a moderate debt burden.",
+        color: "yellow",
+      };
+    }
+
+    if (dti <= 50) {
+      return {
+        level: "High Debt Burden",
+        message:
+          "The applicant has a high debt burden. Further financial assessment is recommended.",
+        color: "orange",
+      };
+    }
+
+    return {
+      level: "Very High Debt Burden",
+      message:
+        "The applicant's monthly debt obligations exceed 50% of monthly income. Careful financial assessment is strongly recommended.",
+      color: "red",
+    };
+  };
+
+  // Input fields
   const fields = [
     { name: "Age", label: "Applicant Age" },
     { name: "Income", label: "Annual Income" },
@@ -147,12 +283,13 @@ function LoanForm() {
     { name: "MonthsEmployed", label: "Months Employed" },
     { name: "LoanTerm", label: "Loan Term (Months)" },
     {
-      name: "DTIRatio",
-      label: "Debt-to-Income Ratio",
+      name: "ExistingMonthlyDebt",
+      label: "Existing Monthly Debt",
       step: "0.01",
     },
   ];
 
+  // Dropdown fields
   const dropdowns = [
     {
       name: "Education",
@@ -198,7 +335,8 @@ function LoanForm() {
       </h2>
 
       <p className="text-slate-500 mb-8">
-        Enter applicant information to assess loan default risk.
+        Enter applicant information to calculate loan installment and assess
+        default risk.
       </p>
 
       {productLoading && (
@@ -211,7 +349,6 @@ function LoanForm() {
 
       <form onSubmit={handleSubmit}>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {/* Applicant Information */}
           {fields.map((field) => (
             <div key={field.name}>
               <label className="block text-sm font-medium text-slate-700 mb-2">
@@ -329,10 +466,92 @@ function LoanForm() {
           ))}
         </div>
 
+        {/* Calculate EMI and DTI */}
+        <button
+          type="button"
+          onClick={handleCalculate}
+          disabled={calculationLoading || productLoading || !product}
+          className="mt-8 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-400 text-white font-medium px-8 py-3 rounded-lg"
+        >
+          {calculationLoading ? "Calculating..." : "Calculate EMI & DTI"}
+        </button>
+
+        {calculationError && (
+          <p className="mt-4 text-red-600">{calculationError}</p>
+        )}
+
+        {/* Calculation Result */}
+        {calculation && (
+          <div className="mt-6 p-6 rounded-xl border border-indigo-200 bg-indigo-50">
+            <h3 className="text-xl font-bold text-slate-800 mb-4">
+              Loan Calculation Summary
+            </h3>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <p>
+                Monthly Income:{" "}
+                <strong>৳{calculation.monthly_income.toLocaleString()}</strong>
+              </p>
+
+              <p>
+                Monthly EMI:{" "}
+                <strong>
+                  ৳{calculation.monthly_installment.toLocaleString()}
+                </strong>
+              </p>
+
+              <p>
+                Existing Monthly Debt:{" "}
+                <strong>
+                  ৳{calculation.existing_monthly_debt.toLocaleString()}
+                </strong>
+              </p>
+
+              <p>
+                Total Monthly Debt:{" "}
+                <strong>
+                  ৳{calculation.total_monthly_debt.toLocaleString()}
+                </strong>
+              </p>
+
+              <p>
+                Actual DTI:{" "}
+                <strong className="text-indigo-700">
+                  {calculation.dti_percentage}%
+                </strong>
+              </p>
+
+              {(() => {
+                const warning = getDTIWarning(calculation.dti_percentage);
+
+                const colors = {
+                  green: "bg-green-100 text-green-800 border-green-300",
+                  yellow: "bg-yellow-100 text-yellow-800 border-yellow-300",
+                  orange: "bg-orange-100 text-orange-800 border-orange-300",
+                  red: "bg-red-100 text-red-800 border-red-300",
+                };
+
+                return (
+                  <div
+                    className={`mt-4 p-4 rounded-lg border ${colors[warning.color]}`}
+                  >
+                    <h4 className="font-bold">
+                      Financial Warning: {warning.level}
+                    </h4>
+
+                    <p className="text-sm mt-1">{warning.message}</p>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        )}
+
+        {/* Predict Loan Risk */}
         <button
           type="submit"
-          disabled={loading || productLoading || !product}
-          className="mt-8 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-400 text-white font-medium px-8 py-3 rounded-lg"
+          disabled={loading || productLoading || !product || !calculation}
+          className="mt-6 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-400 text-white font-medium px-8 py-3 rounded-lg"
         >
           {loading ? "Analyzing..." : "Predict Loan Risk"}
         </button>

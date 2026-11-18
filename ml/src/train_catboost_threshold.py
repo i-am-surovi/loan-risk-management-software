@@ -28,8 +28,9 @@ csv_file = data_dir / "Loan_default.csv"
 
 df = pd.read_csv(csv_file)
 
-X = df.drop(columns=["LoanID", "Default"])
+X = df.drop(columns=["LoanID", "Default", "DTIRatio"])
 y = df["Default"]
+print("Features used by model:", X.columns.tolist())
 
 categorical_features = X.select_dtypes(
     include=["object", "str"]
@@ -56,20 +57,9 @@ print("Validation:", X_val.shape)
 print("Testing:", X_test.shape)
 
 
-# 3. Apply SMOTENC only to training data
-smotenc = SMOTENC(
-    categorical_features=categorical_features,
-    sampling_strategy=0.5,
-    random_state=42,
-    k_neighbors=5
-)
-
-X_train_resampled, y_train_resampled = smotenc.fit_resample(
-    X_train, y_train
-)
-
-print("\nResampled distribution:")
-print(y_train_resampled.value_counts())
+# 3. Check original training class distribution
+print("\nOriginal training distribution:")
+print(y_train.value_counts())
 
 
 # 4. Train CatBoost
@@ -79,6 +69,7 @@ model = CatBoostClassifier(
     depth=8,
     loss_function="Logloss",
     eval_metric="AUC",
+    auto_class_weights="Balanced",
     cat_features=categorical_features,
     random_seed=42,
     verbose=100,
@@ -88,8 +79,8 @@ model = CatBoostClassifier(
 print("\nTraining CatBoost...")
 
 model.fit(
-    X_train_resampled,
-    y_train_resampled,
+    X_train,
+    y_train,
     eval_set=(X_val, y_val),
     early_stopping_rounds=150
 )

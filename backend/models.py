@@ -1,5 +1,5 @@
 
-from sqlalchemy import Column, Integer, Float, String, Boolean
+from sqlalchemy import Column, Integer, Float, String, Boolean, DateTime, func
 from .database import Base
 
 
@@ -29,6 +29,12 @@ class LoanPrediction(Base):
     threshold = Column(Float, nullable=False)
     prediction = Column(Integer, nullable=False)
     risk = Column(String, nullable=False)
+
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False
+    )
 
 
 class LoanProduct(Base):
